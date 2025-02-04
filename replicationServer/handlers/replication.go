@@ -1,22 +1,17 @@
-package main
+package handlers
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/M1keTrike/practicaClienteServido/entities"
+	"github.com/M1keTrike/practicaClienteServido/replicationServer/storage"
 	"github.com/gin-gonic/gin"
 )
 
-var (
-	replicatedUsers []entities.User
-	mutex           sync.Mutex
-)
-
-func checkForChanges() {
+func CheckForChanges() {
 	for {
 		resp, err := http.Get("http://localhost:8081/changes")
 		if err != nil {
@@ -30,36 +25,28 @@ func checkForChanges() {
 		resp.Body.Close()
 
 		if result["changes"] {
-			
-			go receiveNewRecords()
-
-			
-			getUpdatedRecords()
-
-		
-			getDeletedRecords()
+			go ReceiveNewRecords()
+			GetUpdatedRecords()
+			GetDeletedRecords()
 		}
 
 		time.Sleep(5 * time.Second)
 	}
 }
 
-
-func receiveNewRecords() {
+func ReceiveNewRecords() {
 	for {
 		resp, err := http.Get("http://localhost:8081/longpolling")
 		if err != nil {
 			fmt.Println("Error en long polling:", err)
-			time.Sleep(2 * time.Second) 
+			time.Sleep(2 * time.Second)
 			continue
 		}
 
 		decoder := json.NewDecoder(resp.Body)
 		var user entities.User
 		if err := decoder.Decode(&user); err == nil {
-			mutex.Lock()
-			replicatedUsers = append(replicatedUsers, user)
-			mutex.Unlock()
+			storage.AddUser(user)
 			fmt.Println("Nuevo usuario replicado:", user)
 		}
 
@@ -67,8 +54,7 @@ func receiveNewRecords() {
 	}
 }
 
-
-func getUpdatedRecords() {
+func GetUpdatedRecords() {
 	resp, err := http.Get("http://localhost:8081/updated-users")
 	if err != nil {
 		fmt.Println("Error obteniendo actualizaciones:", err)
@@ -79,19 +65,12 @@ func getUpdatedRecords() {
 	var updatedUsers []entities.User
 	json.NewDecoder(resp.Body).Decode(&updatedUsers)
 
-	mutex.Lock()
-	for i, user := range replicatedUsers {
-		for _, updated := range updatedUsers {
-			if user.Id == updated.Id {
-				replicatedUsers[i] = updated
-			}
-		}
+	for _, updatedUser := range updatedUsers {
+		storage.UpdateUser(updatedUser)
 	}
-	mutex.Unlock()
 }
 
-
-func getDeletedRecords() {
+func GetDeletedRecords() {
 	resp, err := http.Get("http://localhost:8081/deleted-users")
 	if err != nil {
 		fmt.Println("Error obteniendo eliminaciones:", err)
@@ -102,27 +81,12 @@ func getDeletedRecords() {
 	var deletedIDs []int
 	json.NewDecoder(resp.Body).Decode(&deletedIDs)
 
-	mutex.Lock()
 	for _, id := range deletedIDs {
-		for i, user := range replicatedUsers {
-			if user.Id == id {
-				replicatedUsers = append(replicatedUsers[:i], replicatedUsers[i+1:]...)
-				break
-			}
-		}
+		storage.DeleteUser(id)
 	}
-	mutex.Unlock()
 }
 
-func main() {
-	go checkForChanges()
-
-	r := gin.Default()
-	r.GET("/replicated-users", func(c *gin.Context) {
-		mutex.Lock()
-		defer mutex.Unlock()
-		c.JSON(http.StatusOK, replicatedUsers)
-	})
-
-	r.Run(":8082")
+func GetReplicatedUsers(c *gin.Context) {
+	users := storage.GetUsers()
+	c.JSON(http.StatusOK, users)
 }
